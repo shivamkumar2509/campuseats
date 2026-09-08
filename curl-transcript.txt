@@ -1,0 +1,92 @@
+CURL TRANSCRIPT - Orders Service
+
+1. Successful Create (201 Created)
+$ curl -i -X POST http://localhost:8080/api/orders \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: idem_abc123" \
+  -d '{"userId":"user_123","vendorId":"vendor_456","items":[{"itemId":"itm_789","quantity":2}],"deliveryAddress":{"building":"Academic Block A","room":"301"}}'
+
+HTTP/1.1 201 CREATED
+Location: /api/orders/ord_abc123
+Content-Type: application/json
+
+{
+  "orderId": "ord_abc123",
+  "status": "CONFIRMED",
+  "grandTotal": 506.00
+}
+
+
+2. Idempotent Repeat (200 OK)
+$ curl -i -X POST http://localhost:8080/api/orders \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: idem_abc123" \
+  -d '{"userId":"user_123","vendorId":"vendor_456","items":[{"itemId":"itm_789","quantity":2}],"deliveryAddress":{"building":"Academic Block A","room":"301"}}'
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "orderId": "ord_abc123",
+  "status": "CONFIRMED",
+  "grandTotal": 506.00
+}
+
+
+3. Malformed Body Rejected (400 Bad Request)
+$ curl -i -X POST http://localhost:8080/api/orders \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"user_123"}'
+
+HTTP/1.1 400 BAD REQUEST
+Content-Type: application/problem+json
+
+{
+  "type": "https://campuseats.edu/errors/bad-request",
+  "title": "Bad Request",
+  "status": 400,
+  "detail": "'vendorId' is required, 'items' must be a non-empty array, 'deliveryAddress' is required"
+}
+
+
+4. Missing Resource (404 Not Found)
+$ curl -i -X GET http://localhost:8080/api/orders/unknown_id
+
+HTTP/1.1 404 NOT FOUND
+Content-Type: application/problem+json
+
+{
+  "type": "https://campuseats.edu/errors/not-found",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "Order unknown_id not found"
+}
+
+
+5. State Conflict (409 Conflict)
+$ curl -i -X POST http://localhost:8080/api/orders/ord_abc123/cancellation \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"USER_REQUEST"}'
+
+HTTP/1.1 202 ACCEPTED
+Content-Type: application/json
+
+{
+  "orderId": "ord_abc123",
+  "status": "CANCELLED"
+}
+
+# Second attempt - already cancelled
+$ curl -i -X POST http://localhost:8080/api/orders/ord_abc123/cancellation \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"USER_REQUEST"}'
+
+HTTP/1.1 409 CONFLICT
+Content-Type: application/problem+json
+
+{
+  "type": "https://campuseats.edu/errors/conflict",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Order cannot be cancelled (status: CANCELLED)"
+}
