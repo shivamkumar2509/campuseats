@@ -10,16 +10,19 @@ info:
 servers:
   - url: http://localhost:8080/api
     description: Development server
-  - url: https://orders.campuseats.edu/api
-    description: Production server
 
 paths:
   /orders:
     post:
       summary: Create a new order
-      description: Creates a new food order with items and delivery details
       operationId: createOrder
       parameters:
+        - in: header
+          name: Authorization
+          required: true
+          schema:
+            type: string
+          description: Bearer token for authentication
         - in: header
           name: Idempotency-Key
           schema:
@@ -30,43 +33,69 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CreateOrderRequest"
+              $ref: '#/components/schemas/CreateOrderRequest'
       responses:
-        "201":
+        '201':
           description: Order created successfully
           headers:
             Location:
               schema:
                 type: string
               description: URL of the created order
+            X-RateLimit-Limit:
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              schema:
+                type: integer
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OrderResponse"
-        "400":
+                $ref: '#/components/schemas/OrderResponse'
+        '400':
           description: Malformed request body
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/Problem"
-        "409":
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Unauthorized - missing or invalid token
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
           description: Duplicate order detected
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/Problem"
-        "422":
+                $ref: '#/components/schemas/Problem'
+        '422':
           description: Valid request but business rule violated
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/Problem"
-
+                $ref: '#/components/schemas/Problem'
+        '429':
+          description: Too Many Requests
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+    
     get:
       summary: List orders with filters
-      description: Retrieves a filtered list of orders
       operationId: listOrders
       parameters:
+        - in: header
+          name: Authorization
+          required: true
+          schema:
+            type: string
         - in: query
           name: userId
           schema:
@@ -90,32 +119,45 @@ paths:
             minimum: 1
             maximum: 100
             default: 20
-          description: Maximum number of orders to return
         - in: query
           name: offset
           schema:
             type: integer
             minimum: 0
             default: 0
-          description: Number of orders to skip
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [createdAt, -createdAt, grandTotal, -grandTotal]
+            default: -createdAt
       responses:
-        "200":
+        '200':
           description: List of orders retrieved
+          headers:
+            Cache-Control:
+              schema:
+                type: string
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OrderListResponse"
-        "400":
+                $ref: '#/components/schemas/OrderListResponse'
+        '400':
           description: Invalid filter parameters
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/Problem"
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Unauthorized
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
 
   /orders/{orderId}:
     get:
       summary: Get order by ID
-      description: Retrieves a single order by its unique identifier
       operationId: getOrder
       parameters:
         - in: path
@@ -123,25 +165,152 @@ paths:
           required: true
           schema:
             type: string
-          description: Order ID (UUID format)
+        - in: header
+          name: Authorization
+          required: true
+          schema:
+            type: string
+        - in: header
+          name: If-None-Match
+          schema:
+            type: string
+          description: ETag for conditional GET
       responses:
-        "200":
+        '200':
           description: Order retrieved successfully
+          headers:
+            ETag:
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OrderResponse"
-        "404":
+                $ref: '#/components/schemas/OrderResponse'
+        '304':
+          description: Not Modified - ETag matches
+        '401':
+          description: Unauthorized
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
           description: Order not found
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/Problem"
+                $ref: '#/components/schemas/Problem'
+
+    patch:
+      summary: Update order status
+      operationId: updateOrder
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema:
+            type: string
+        - in: header
+          name: Authorization
+          required: true
+          schema:
+            type: string
+        - in: header
+          name: If-Match
+          required: true
+          schema:
+            type: string
+          description: ETag for conditional write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOrderRequest'
+      responses:
+        '200':
+          description: Order updated successfully
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderResponse'
+        '400':
+          description: Malformed request
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Unauthorized
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Order not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '412':
+          description: Precondition Failed - ETag mismatch
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+    delete:
+      summary: Delete an order
+      operationId: deleteOrder
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema:
+            type: string
+        - in: header
+          name: Authorization
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Order deleted successfully
+        '401':
+          description: Unauthorized
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Order not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+    options:
+      summary: Get allowed methods
+      operationId: optionsOrder
+      responses:
+        '204':
+          description: No Content
+          headers:
+            Allow:
+              schema:
+                type: string
+              description: List of allowed methods
 
   /orders/{orderId}/cancellation:
     post:
       summary: Cancel an order
-      description: Cancels an existing order with a reason
       operationId: cancelOrder
       parameters:
         - in: path
@@ -149,43 +318,52 @@ paths:
           required: true
           schema:
             type: string
-          description: Order ID to cancel
+        - in: header
+          name: Authorization
+          required: true
+          schema:
+            type: string
         - in: header
           name: Idempotency-Key
           schema:
             type: string
-          description: Unique key to prevent duplicate cancellations
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CancelOrderRequest"
+              $ref: '#/components/schemas/CancelOrderRequest'
       responses:
-        "202":
-          description: Cancellation accepted (async processing)
+        '202':
+          description: Cancellation accepted
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CancellationResponse"
-        "400":
+                $ref: '#/components/schemas/CancellationResponse'
+        '400':
           description: Malformed request
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/Problem"
-        "404":
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Unauthorized
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
           description: Order not found
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/Problem"
-        "409":
-          description: Order cannot be cancelled (already delivered or cancelled)
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: Order cannot be cancelled
           content:
             application/problem+json:
               schema:
-                $ref: "#/components/schemas/Problem"
+                $ref: '#/components/schemas/Problem'
 
 components:
   schemas:
@@ -199,45 +377,33 @@ components:
       properties:
         type:
           type: string
-          description: URI reference to problem type
           example: "https://campuseats.edu/errors/invalid-input"
         title:
           type: string
-          description: Short human-readable summary
           example: "Invalid Input"
         status:
           type: integer
-          description: HTTP status code
           example: 400
         detail:
           type: string
-          description: Detailed explanation
-          example: "Field 'userId' must be a valid UUID"
-        instance:
-          type: string
-          description: URI reference to specific occurrence
-          example: "/orders/abc-123"
-
+          example: "Field 'userId' is required"
+    
     Address:
       type: object
       properties:
         building:
           type: string
-          description: Campus building name
           example: "Academic Block A"
         room:
           type: string
-          description: Room number
           example: "301"
         landmark:
           type: string
-          description: Nearby landmark
           example: "Near Library"
         instructions:
           type: string
-          description: Special delivery instructions
           example: "Call me when you reach"
-
+    
     OrderItem:
       type: object
       properties:
@@ -257,7 +423,7 @@ components:
         specialInstructions:
           type: string
           example: "No onions please"
-
+    
     CreateOrderRequest:
       type: object
       required:
@@ -291,13 +457,20 @@ components:
                 type: string
                 example: "No onions"
         deliveryAddress:
-          $ref: "#/components/schemas/Address"
+          $ref: '#/components/schemas/Address'
         scheduleFor:
           type: string
           format: date-time
-          description: Optional future delivery time
           example: "2026-09-10T14:30:00+05:30"
-
+    
+    UpdateOrderRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [PENDING, CONFIRMED, PREPARING, READY, DELIVERED, CANCELLED]
+          example: "PREPARING"
+    
     CancelOrderRequest:
       type: object
       required:
@@ -310,7 +483,7 @@ components:
         description:
           type: string
           example: "Changed my mind"
-
+    
     OrderResponse:
       type: object
       properties:
@@ -330,9 +503,9 @@ components:
         items:
           type: array
           items:
-            $ref: "#/components/schemas/OrderItem"
+            $ref: '#/components/schemas/OrderItem'
         deliveryAddress:
-          $ref: "#/components/schemas/Address"
+          $ref: '#/components/schemas/Address'
         subtotal:
           type: number
           format: float
@@ -357,14 +530,14 @@ components:
           type: string
           format: date-time
           example: "2026-09-08T14:35:22+05:30"
-
+    
     OrderListResponse:
       type: object
       properties:
         items:
           type: array
           items:
-            $ref: "#/components/schemas/OrderResponse"
+            $ref: '#/components/schemas/OrderResponse'
         total:
           type: integer
           example: 42
@@ -374,7 +547,7 @@ components:
         offset:
           type: integer
           example: 0
-
+    
     CancellationResponse:
       type: object
       properties:
