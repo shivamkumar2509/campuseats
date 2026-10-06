@@ -1,76 +1,99 @@
-def problem(status_code, title, detail, type_url=None):
-    """Single error handler for all endpoints"""
-    return {
+def problem(status_code, title, detail, type_url=None, errors=None):
+    """
+    Single error handler for all endpoints.
+    Returns a tuple of (response_dict, status_code, headers).
+    """
+    response = {
         'type': type_url or f"https://campuseats.edu/errors/{title.lower().replace(' ', '-')}",
         'title': title,
         'status': status_code,
         'detail': detail
-    }, status_code
+    }
+    
+    if errors:
+        response['errors'] = errors
+    
+    headers = {
+        'Content-Type': 'application/problem+json; charset=utf-8'
+    }
+    
+    return response, status_code, headers
 
 
 def validate_create_order(data):
-    """Validation function - does the job of XML Schema"""
+    """
+    Validation function - collects ALL errors, not just the first.
+    Returns a list of error objects with field and message.
+    """
     errors = []
-
+    
     if not data:
-        errors.append("Request body is empty")
-        return errors
-
+        return [{"field": "body", "message": "Request body is empty"}]
+    
+    # Validate userId
     if not data.get('userId'):
-        errors.append("'userId' is required and must be a string")
+        errors.append({"field": "userId", "message": "is required"})
     elif not isinstance(data['userId'], str):
-        errors.append("'userId' must be a string")
-
+        errors.append({"field": "userId", "message": "must be a string"})
+    elif len(data['userId']) < 1:
+        errors.append({"field": "userId", "message": "must not be empty"})
+    
+    # Validate vendorId
     if not data.get('vendorId'):
-        errors.append("'vendorId' is required and must be a string")
+        errors.append({"field": "vendorId", "message": "is required"})
     elif not isinstance(data['vendorId'], str):
-        errors.append("'vendorId' must be a string")
-
+        errors.append({"field": "vendorId", "message": "must be a string"})
+    
+    # Validate items
     if not data.get('items'):
-        errors.append("'items' must be a non-empty array")
+        errors.append({"field": "items", "message": "must be a non-empty array"})
     elif not isinstance(data['items'], list):
-        errors.append("'items' must be an array")
+        errors.append({"field": "items", "message": "must be an array"})
+    elif len(data['items']) == 0:
+        errors.append({"field": "items", "message": "must contain at least one item"})
     else:
         for i, item in enumerate(data['items']):
+            if not isinstance(item, dict):
+                errors.append({"field": f"items[{i}]", "message": "must be an object"})
+                continue
+            
             if not item.get('itemId'):
-                errors.append(f"items[{i}].itemId is required")
-
-            if (
-                not item.get('quantity')
-                or not isinstance(item['quantity'], int)
-                or item['quantity'] < 1
-            ):
-                errors.append(
-                    f"items[{i}].quantity must be an integer >= 1"
-                )
-
+                errors.append({"field": f"items[{i}].itemId", "message": "is required"})
+            
+            if item.get('quantity') is None:
+                errors.append({"field": f"items[{i}].quantity", "message": "is required"})
+            elif not isinstance(item['quantity'], int):
+                errors.append({"field": f"items[{i}].quantity", "message": "must be an integer"})
+            elif item['quantity'] < 1:
+                errors.append({"field": f"items[{i}].quantity", "message": "must be >= 1"})
+    
+    # Validate deliveryAddress
     if not data.get('deliveryAddress'):
-        errors.append("'deliveryAddress' is required")
+        errors.append({"field": "deliveryAddress", "message": "is required"})
     elif not isinstance(data['deliveryAddress'], dict):
-        errors.append("'deliveryAddress' must be an object")
+        errors.append({"field": "deliveryAddress", "message": "must be an object"})
     elif not data['deliveryAddress'].get('building'):
-        errors.append("deliveryAddress.building is required")
-
+        errors.append({"field": "deliveryAddress.building", "message": "is required"})
+    
     return errors
 
 
 def validate_cancel_order(data):
+    """
+    Validation for cancel order request.
+    """
     errors = []
-
+    
     if not data:
-        errors.append("Request body is empty")
-        return errors
-
+        return [{"field": "body", "message": "Request body is empty"}]
+    
     if not data.get('reason'):
-        errors.append("'reason' is required")
-    elif data['reason'] not in [
-        'USER_REQUEST',
-        'VENDOR_REQUEST',
-        'OUT_OF_STOCK',
-        'OTHER'
-    ]:
-        errors.append(
-            "'reason' must be one of: USER_REQUEST, VENDOR_REQUEST, OUT_OF_STOCK, OTHER"
-        )
-
-    return errors 
+        errors.append({"field": "reason", "message": "is required"})
+    elif data['reason'] not in ['USER_REQUEST', 'VENDOR_REQUEST', 
+                                  'OUT_OF_STOCK', 'OTHER']:
+        errors.append({
+            "field": "reason", 
+            "message": "must be one of: USER_REQUEST, VENDOR_REQUEST, OUT_OF_STOCK, OTHER"
+        })
+    
+    return errors
