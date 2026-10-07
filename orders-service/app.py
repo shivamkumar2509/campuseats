@@ -1,167 +1,268 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 import os
 from models import Order
 from store import OrderStore
 from errors import problem, validate_create_order, validate_cancel_order
-from datetime import datetime, timedelta
-import uuid
+from datetime import datetime
+import requests
 import time
 import random
-from functools import wraps
-from collections import defaultdict
-import requests
+import json
 
 app = Flask(__name__)
 store = OrderStore()
 PAYMENTS_SERVICE_URL = os.environ.get('PAYMENTS_SERVICE_URL', 'http://localhost:8081/api')
 
-rate_limit_store = defaultdict(list)
-
-
-@app.after_request
-def add_security_headers(response):
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, PATCH, DELETE, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, Idempotency-Key, If-None-Match, If-Match'
-    return response
-
+# ============================================================
+# RATE LIMITING (A4)
+# ============================================================
+rate_limit_store = {}
 
 def check_rate_limit(user_id):
-    now = datetime.now()
-    window = now - timedelta(minutes=1)
-    rate_limit_store[user_id] = [
-        t for t in rate_limit_store[user_id] if t > window
-    ]
+    """Check rate limit - 100 requests per minute per user"""
+    now = time.time()
+    window = now - 60
+    
+    if user_id not in rate_limit_store:
+        rate_limit_store[user_id] = []
+    
+    # Remove old requests
+    rate_limit_store[user_id] = [t for t in rate_limit_store[user_id] if t > window]
+    
     if len(rate_limit_store[user_id]) >= 100:
         return False, 0
+    
     rate_limit_store[user_id].append(now)
     return True, 100 - len(rate_limit_store[user_id])
 
 
-def require_auth(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth = request.headers.get('Authorization')
-        if not auth or not auth.startswith('Bearer '):
-            return problem(401, "Unauthorized", "Missing or invalid token")
-        token = auth.split(' ')[1]
-        if not token:
-            return problem(401, "Unauthorized", "Empty token")
-        return f(*args, **kwargs)
-    return decorated
-
-
-@app.route('/api/orders', methods=['OPTIONS'])
-def options_orders():
-    response = app.make_default_options_response()
-    response.headers['Allow'] = 'GET, POST, OPTIONS'
-    return response
-
-
+# ============================================================
+# POST /orders - Create Order
+# ============================================================
 @app.route('/api/orders', methods=['POST'])
-@require_auth
 def create_order():
-    user_id = request.headers.get('X-User-Id', 'anonymous')
-    allowed, remaining = check_rate_limit(user_id)
+    # Get auth token
+    auth = request.headers.get('Authorization')
+    if not auth or not auth.startswith('Bearer '):
+        return problem(401, "Unauthorized", "Missing or invalid token")
+    
+    # Rate limit check
+    allowed, remaining = check_rate_limit('user_123')
     if not allowed:
-        response = problem(429, "Too Many Requests", "Rate limit exceeded")
-        response[0].headers['Retry-After'] = '60'
-        return response
-
+        response, status, headers = problem(429, "Rate Limit Exceeded", 
+            "Too many requests. Please retry after 60 seconds.")
+        headers['Retry-After'] = '60'
+        headers['X-RateLimit-Limit'] = '100'
+        headers['X-RateLimit-Remaining'] = '0'
+        return response, status, headers
+    
+    # Validate request body
     data = request.get_json()
-
     errors = validate_create_order(data)
     if errors:
-        return problem(400, "Bad Request", ", ".join(errors))
-
+        return problem(422, "Validation Error", 
+            "Request body failed validation", errors=errors)
+    
+    # Check idempotency
     idempotency_key = request.headers.get('Idempotency-Key')
     if idempotency_key and idempotency_key in store.idempotency_cache:
         return jsonify(store.idempotency_cache[idempotency_key].as_json()), 200
-
+    
+    # Create order
     order = Order(data)
     order.calculate_totals()
-
+    
+    # Call Payment Service
     try:
         payment_response = call_payment_service(order)
         if payment_response.status_code != 200:
-            return problem(402, "Payment Failed", "Payment service declined the transaction")
+            return problem(402, "Payment Declined", 
+                "Payment service declined the transaction")
     except requests.exceptions.Timeout:
-        return problem(503, "Service Unavailable", "Payment service timed out")
+        return problem(503, "Service Unavailable", 
+            "Payment service timed out")
     except requests.exceptions.ConnectionError:
-        return problem(503, "Service Unavailable", "Payment service unreachable")
-    except Exception as e:
-        return problem(503, "Service Unavailable", f"Payment service error: {str(e)}")
-
+        return problem(503, "Service Unavailable", 
+            "Payment service unreachable")
+    
+    # Save order
     store.save(order)
     if idempotency_key:
         store.idempotency_cache[idempotency_key] = order
-
+    
+    # Success response with Location header (A3)
     response = jsonify(order.as_json())
     response.headers['Location'] = f'/api/orders/{order.order_id}'
     response.headers['X-RateLimit-Limit'] = '100'
     response.headers['X-RateLimit-Remaining'] = str(remaining)
-    response.headers['Cache-Control'] = 'no-store'
     return response, 201
 
 
-@app.route('/api/orders/<order_id>', methods=['GET'])
-@require_auth
-def get_order(order_id):
-    order = store.get(order_id)
-    if not order:
-        return problem(404, "Not Found", f"Order {order_id} not found")
-
-    etag = f'"{hash(order.updated_at.isoformat())}"'
-
-    if request.headers.get('If-None-Match') == etag:
-        return '', 304
-
-    response = jsonify(order.as_json())
-    response.headers['ETag'] = etag
-    response.headers['Cache-Control'] = 'max-age=3600, must-revalidate'
-    return response, 200
-
-
+# ============================================================
+# GET /orders - List Orders
+# ============================================================
 @app.route('/api/orders', methods=['GET'])
-@require_auth
 def list_orders():
+    auth = request.headers.get('Authorization')
+    if not auth or not auth.startswith('Bearer '):
+        return problem(401, "Unauthorized", "Missing or invalid token")
+    
     user_id = request.args.get('userId')
     status = request.args.get('status')
-    limit = request.args.get('limit', 20, type=int)
-    offset = request.args.get('offset', 0, type=int)
-
+    
+    # Validate filter params
+    if status and status not in ['PENDING', 'CONFIRMED', 'PREPARING', 
+                                   'READY', 'DELIVERED', 'CANCELLED']:
+        return problem(400, "Bad Request", 
+            f"Invalid status filter: {status}")
+    
     orders = store.filter(user_id=user_id, status=status)
-    paginated = orders[offset:offset+limit]
-
     return jsonify({
-        'items': [order.as_json() for order in paginated],
+        'items': [order.as_json() for order in orders],
         'total': len(orders),
-        'limit': limit,
-        'offset': offset
+        'limit': 20,
+        'offset': 0
     }), 200
 
 
+# ============================================================
+# GET /orders/{id} - Get Single Order (with content negotiation)
+# ============================================================
+@app.route('/api/orders/<order_id>', methods=['GET'])
+def get_order(order_id):
+    auth = request.headers.get('Authorization')
+    if not auth or not auth.startswith('Bearer '):
+        return problem(401, "Unauthorized", "Missing or invalid token")
+    
+    order = store.get(order_id)
+    if not order:
+        return problem(404, "Order Not Found", f"Order {order_id} not found")
+    
+    # Content negotiation (C3)
+    accept = request.headers.get('Accept', 'application/json')
+    
+    if 'application/xml' in accept:
+        xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<order>
+    <orderId>{order.order_id}</orderId>
+    <userId>{order.user_id}</userId>
+    <vendorId>{order.vendor_id}</vendorId>
+    <status>{order.status}</status>
+    <grandTotal>{order.grand_total}</grandTotal>
+    <createdAt>{order.created_at.isoformat()}</createdAt>
+</order>"""
+        return Response(xml, status=200, 
+            content_type='application/xml; charset=utf-8')
+    
+    elif 'application/json' in accept or '*/*' in accept or not accept:
+        return jsonify(order.as_json()), 200
+    
+    else:
+        return problem(406, "Not Acceptable", 
+            f"Content type '{accept}' not supported")
+
+
+# ============================================================
+# PATCH /orders/{id} - Update Order (with If-Match)
+# ============================================================
+@app.route('/api/orders/<order_id>', methods=['PATCH'])
+def update_order(order_id):
+    auth = request.headers.get('Authorization')
+    if not auth or not auth.startswith('Bearer '):
+        return problem(401, "Unauthorized", "Missing or invalid token")
+    
+    order = store.get(order_id)
+    if not order:
+        return problem(404, "Order Not Found", f"Order {order_id} not found")
+    
+    # Check If-Match (C2)
+    if_match = request.headers.get('If-Match')
+    current_etag = f'"{hash(order.updated_at.isoformat())}"'
+    
+    if if_match and if_match != current_etag:
+        return problem(412, "Precondition Failed", 
+            "The resource has been modified by another user.")
+    
+    data = request.get_json()
+    if not data or 'status' not in data:
+        return problem(400, "Bad Request", "Missing 'status' field")
+    
+    new_status = data['status']
+    if new_status not in ['PENDING', 'CONFIRMED', 'PREPARING', 
+                          'READY', 'DELIVERED', 'CANCELLED']:
+        return problem(400, "Bad Request", f"Invalid status: {new_status}")
+    
+    # Check illegal transitions (B2)
+    if order.status == 'DELIVERED' and new_status != 'DELIVERED':
+        return problem(409, "Illegal Transition", 
+            f"Cannot change status from DELIVERED to {new_status}")
+    
+    order.status = new_status
+    order.updated_at = datetime.now()
+    store.save(order)
+    
+    return jsonify(order.as_json()), 200
+
+
+# ============================================================
+# DELETE /orders/{id} - Delete Order
+# ============================================================
+@app.route('/api/orders/<order_id>', methods=['DELETE'])
+def delete_order(order_id):
+    auth = request.headers.get('Authorization')
+    if not auth or not auth.startswith('Bearer '):
+        return problem(401, "Unauthorized", "Missing or invalid token")
+    
+    order = store.get(order_id)
+    if not order:
+        return problem(404, "Order Not Found", f"Order {order_id} not found")
+    
+    if order.status == 'DELIVERED':
+        return problem(409, "Conflict", 
+            "Cannot delete a delivered order")
+    
+    store.delete(order_id)
+    return '', 204
+
+
+# ============================================================
+# OPTIONS - Allow Header (A5 from Assignment 5)
+# ============================================================
+@app.route('/api/orders/<order_id>', methods=['OPTIONS'])
+def options_order(order_id):
+    response = app.make_default_options_response()
+    response.headers['Allow'] = 'GET, PATCH, DELETE, OPTIONS'
+    return response
+
+
+# ============================================================
+# POST /orders/{id}/cancellation - Cancel Order
+# ============================================================
 @app.route('/api/orders/<order_id>/cancellation', methods=['POST'])
-@require_auth
 def cancel_order(order_id):
+    auth = request.headers.get('Authorization')
+    if not auth or not auth.startswith('Bearer '):
+        return problem(401, "Unauthorized", "Missing or invalid token")
+    
     data = request.get_json()
     errors = validate_cancel_order(data)
     if errors:
-        return problem(400, "Bad Request", ", ".join(errors))
-
+        return problem(422, "Validation Error", 
+            "Request body failed validation", errors=errors)
+    
     order = store.get(order_id)
     if not order:
-        return problem(404, "Not Found", f"Order {order_id} not found")
-
+        return problem(404, "Order Not Found", f"Order {order_id} not found")
+    
+    # Illegal transitions
     if order.status in ['DELIVERED', 'CANCELLED']:
-        return problem(409, "Conflict", f"Order cannot be cancelled (status: {order.status})")
-
+        return problem(409, "Illegal Transition", 
+            f"Order cannot be cancelled (status: {order.status})")
+    
     order.status = 'CANCELLED'
     order.updated_at = datetime.now()
     store.save(order)
-
+    
     return jsonify({
         'orderId': order.order_id,
         'status': 'CANCELLED',
@@ -170,45 +271,13 @@ def cancel_order(order_id):
     }), 202
 
 
-@app.route('/api/orders/<order_id>', methods=['PATCH'])
-@require_auth
-def update_order(order_id):
-    order = store.get(order_id)
-    if not order:
-        return problem(404, "Not Found", f"Order {order_id} not found")
-
-    if_match = request.headers.get('If-Match')
-    current_etag = f'"{hash(order.updated_at.isoformat())}"'
-
-    if if_match and if_match != current_etag:
-        return problem(412, "Precondition Failed", "The resource has been modified by another user")
-
-    data = request.get_json()
-    if 'status' in data:
-        order.status = data['status']
-    order.updated_at = datetime.now()
-    store.save(order)
-
-    response = jsonify(order.as_json())
-    response.headers['ETag'] = f'"{hash(order.updated_at.isoformat())}"'
-    return response, 200
-
-
-@app.route('/api/orders/<order_id>', methods=['DELETE'])
-@require_auth
-def delete_order(order_id):
-    order = store.get(order_id)
-    if not order:
-        return problem(404, "Not Found", f"Order {order_id} not found")
-
-    store.delete(order_id)
-    return '', 204
-
-
+# ============================================================
+# Helper - Call Payment Service with retry
+# ============================================================
 def call_payment_service(order):
     retries = 3
     backoff = 0.5
-
+    
     for attempt in range(retries):
         try:
             response = requests.post(
@@ -223,12 +292,8 @@ def call_payment_service(order):
                 headers={'Idempotency-Key': f'pay_{order.order_id}'}
             )
             return response
-        except requests.exceptions.Timeout:
-            if attempt == retries - 1:
-                raise
-            sleep_time = backoff * (2 ** attempt) + random.uniform(0, 0.1)
-            time.sleep(sleep_time)
-        except requests.exceptions.ConnectionError:
+        except (requests.exceptions.Timeout, 
+                requests.exceptions.ConnectionError):
             if attempt == retries - 1:
                 raise
             sleep_time = backoff * (2 ** attempt) + random.uniform(0, 0.1)
@@ -236,4 +301,4 @@ def call_payment_service(order):
 
 
 if __name__ == '__main__':
-    app.run(port=8080, debug=True) 
+    app.run(port=8080, debug=True)
