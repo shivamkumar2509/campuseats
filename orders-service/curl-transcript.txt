@@ -1,92 +1,187 @@
-CURL TRANSCRIPT - Orders Service
+CURL TRANSCRIPT - Orders Service (Assignment 6)
 
-1. Successful Create (201 Created)
+====================================================
+1. SUCCESS: Create Order (201 Created)
+====================================================
+
 $ curl -i -X POST http://localhost:8080/api/orders \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer test_token" \
   -H "Idempotency-Key: idem_abc123" \
   -d '{"userId":"user_123","vendorId":"vendor_456","items":[{"itemId":"itm_789","quantity":2}],"deliveryAddress":{"building":"Academic Block A","room":"301"}}'
 
 HTTP/1.1 201 CREATED
 Location: /api/orders/ord_abc123
-Content-Type: application/json
+Content-Type: application/json; charset=utf-8
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 99
 
 {
   "orderId": "ord_abc123",
-  "status": "CONFIRMED",
+  "status": "PENDING",
   "grandTotal": 506.00
 }
 
 
-2. Idempotent Repeat (200 OK)
+====================================================
+2. FAILURE: Empty Cart (422 Unprocessable Entity)
+====================================================
+
 $ curl -i -X POST http://localhost:8080/api/orders \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: idem_abc123" \
-  -d '{"userId":"user_123","vendorId":"vendor_456","items":[{"itemId":"itm_789","quantity":2}],"deliveryAddress":{"building":"Academic Block A","room":"301"}}'
+  -H "Authorization: Bearer test_token" \
+  -d '{"userId":"user_123","vendorId":"vendor_456","items":[],"deliveryAddress":{"building":"A"}}'
 
-HTTP/1.1 200 OK
-Content-Type: application/json
+HTTP/1.1 422 UNPROCESSABLE ENTITY
+Content-Type: application/problem+json; charset=utf-8
 
 {
-  "orderId": "ord_abc123",
-  "status": "CONFIRMED",
-  "grandTotal": 506.00
+  "type": "https://campuseats.edu/errors/validation-error",
+  "title": "Validation Error",
+  "status": 422,
+  "detail": "Request body failed validation",
+  "errors": [
+    {"field": "items", "message": "must contain at least one item"}
+  ]
 }
 
 
-3. Malformed Body Rejected (400 Bad Request)
+====================================================
+3. FAILURE: Quantity <= 0 (422 Unprocessable Entity)
+====================================================
+
 $ curl -i -X POST http://localhost:8080/api/orders \
   -H "Content-Type: application/json" \
-  -d '{"userId":"user_123"}'
+  -H "Authorization: Bearer test_token" \
+  -d '{"userId":"user_123","vendorId":"vendor_456","items":[{"itemId":"itm_789","quantity":0}],"deliveryAddress":{"building":"A"}}'
 
-HTTP/1.1 400 BAD REQUEST
-Content-Type: application/problem+json
+HTTP/1.1 422 UNPROCESSABLE ENTITY
+Content-Type: application/problem+json; charset=utf-8
 
 {
-  "type": "https://campuseats.edu/errors/bad-request",
-  "title": "Bad Request",
-  "status": 400,
-  "detail": "'vendorId' is required, 'items' must be a non-empty array, 'deliveryAddress' is required"
+  "type": "https://campuseats.edu/errors/validation-error",
+  "title": "Validation Error",
+  "status": 422,
+  "detail": "Request body failed validation",
+  "errors": [
+    {"field": "items[0].quantity", "message": "must be >= 1"}
+  ]
 }
 
 
-4. Missing Resource (404 Not Found)
-$ curl -i -X GET http://localhost:8080/api/orders/unknown_id
+====================================================
+4. FAILURE: Unknown Order ID (404 Not Found)
+====================================================
+
+$ curl -i http://localhost:8080/api/orders/unknown_id \
+  -H "Authorization: Bearer test_token"
 
 HTTP/1.1 404 NOT FOUND
-Content-Type: application/problem+json
+Content-Type: application/problem+json; charset=utf-8
 
 {
-  "type": "https://campuseats.edu/errors/not-found",
-  "title": "Not Found",
+  "type": "https://campuseats.edu/errors/order-not-found",
+  "title": "Order Not Found",
   "status": 404,
   "detail": "Order unknown_id not found"
 }
 
 
-5. State Conflict (409 Conflict)
-$ curl -i -X POST http://localhost:8080/api/orders/ord_abc123/cancellation \
-  -H "Content-Type: application/json" \
-  -d '{"reason":"USER_REQUEST"}'
+====================================================
+5. FAILURE: Missing Authorization (401 Unauthorized)
+====================================================
 
-HTTP/1.1 202 ACCEPTED
-Content-Type: application/json
+$ curl -i -X POST http://localhost:8080/api/orders \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"user_123","vendorId":"vendor_456","items":[{"itemId":"itm_789","quantity":2}],"deliveryAddress":{"building":"A"}}'
+
+HTTP/1.1 401 UNAUTHORIZED
+Content-Type: application/problem+json; charset=utf-8
 
 {
-  "orderId": "ord_abc123",
-  "status": "CANCELLED"
+  "type": "https://campuseats.edu/errors/unauthorized",
+  "title": "Unauthorized",
+  "status": 401,
+  "detail": "Missing or invalid token"
 }
 
-# Second attempt - already cancelled
-$ curl -i -X POST http://localhost:8080/api/orders/ord_abc123/cancellation \
+
+====================================================
+6. FAILURE: Illegal Transition (409 Conflict)
+====================================================
+
+$ curl -i -X POST http://localhost:8080/api/orders/ord_delivered/cancellation \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer test_token" \
   -d '{"reason":"USER_REQUEST"}'
 
 HTTP/1.1 409 CONFLICT
-Content-Type: application/problem+json
+Content-Type: application/problem+json; charset=utf-8
 
 {
-  "type": "https://campuseats.edu/errors/conflict",
-  "title": "Conflict",
+  "type": "https://campuseats.edu/errors/illegal-transition",
+  "title": "Illegal Transition",
   "status": 409,
-  "detail": "Order cannot be cancelled (status: CANCELLED)"
+  "detail": "Order cannot be cancelled (status: DELIVERED)"
+}
+
+
+====================================================
+7. FAILURE: Rate Limit Exceeded (429 Too Many Requests)
+====================================================
+
+$ curl -i http://localhost:8080/api/orders \
+  -H "Authorization: Bearer test_token"
+
+HTTP/1.1 429 TOO MANY REQUESTS
+Retry-After: 60
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 0
+Content-Type: application/problem+json; charset=utf-8
+
+{
+  "type": "https://campuseats.edu/errors/rate-limit-exceeded",
+  "title": "Rate Limit Exceeded",
+  "status": 429,
+  "detail": "Too many requests. Please retry after 60 seconds."
+}
+
+
+====================================================
+8. CONTENT NEGOTIATION: Accept: application/xml (200 OK)
+====================================================
+
+$ curl -i http://localhost:8080/api/orders/ord_abc123 \
+  -H "Authorization: Bearer test_token" \
+  -H "Accept: application/xml"
+
+HTTP/1.1 200 OK
+Content-Type: application/xml; charset=utf-8
+
+<?xml version="1.0" encoding="UTF-8"?>
+<order>
+    <orderId>ord_abc123</orderId>
+    <userId>user_123</userId>
+    <vendorId>vendor_456</vendorId>
+    <status>PENDING</status>
+    <grandTotal>506.0</grandTotal>
+</order>
+
+
+====================================================
+9. CONTENT NEGOTIATION: Accept: application/pdf (406 Not Acceptable)
+====================================================
+
+$ curl -i http://localhost:8080/api/orders/ord_abc123 \
+  -H "Authorization: Bearer test_token" \
+  -H "Accept: application/pdf"
+
+HTTP/1.1 406 NOT ACCEPTABLE
+Content-Type: application/problem+json; charset=utf-8
+
+{
+  "type": "https://campuseats.edu/errors/not-acceptable",
+  "title": "Not Acceptable",
+  "status": 406,
+  "detail": "Content type 'application/pdf' not supported"
 }
