@@ -334,7 +334,7 @@ Content-Type: application/problem+json; charset=utf-8
 curl -i http://localhost:8080/api/orders/ord_abc123 \
   -H "Authorization: Bearer test_token" \
   -H "Accept: application/xml"
-  HTTP/1.1 200 
+  HTTP/1.1 200 OK
 Content-Type: application/xml; charset=utf-8
 
 <?xml version="1.0" encoding="UTF-8"?>
