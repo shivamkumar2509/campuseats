@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CampusEats - Dishes</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family: Arial, sans-serif;
+        background: #f4f4f4;
+        padding: 2rem;
+        margin: 0;
+      }
+      h1 {
+        color: #333;
+      }
+      .sub {
+        color: #666;
+        margin-bottom: 1rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: #fff;
+        margin: 20px 0;
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      th,
+      td {
+        padding: 12px;
+        text-align: left;
+        border-bottom: 1px solid #ddd;
+      }
+      th {
+        background: #4caf50;
+        color: white;
+      }
+      .available {
+        color: green;
+        font-weight: bold;
+      }
+      .unavailable {
+        color: red;
+        font-weight: bold;
+      }
+      .form-box {
+        background: #fff;
+        padding: 1rem 1.25rem;
+        border-radius: 10px;
+        margin-top: 1rem;
+      }
+      input,
+      button {
+        padding: 0.5rem;
+        margin: 0.25rem 0;
+        border-radius: 6px;
+        border: 1px solid #ccc;
+      }
+      button {
+        background: #4caf50;
+        color: white;
+        cursor: pointer;
+        border: none;
+        font-weight: bold;
+      }
+      button:hover {
+        background: #45a049;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>CampusEats - Dishes</h1>
+    <p class="sub">List of dishes — data served by GraphQL</p>
+
+    <table id="dishes-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Name</th>
+          <th>Price (₹)</th>
+          <th>Available</th>
+        </tr>
+      </thead>
+      <tbody id="dishes-body"></tbody>
+    </table>
+
+    <div class="form-box">
+      <h3>Add a Dish</h3>
+      <form id="addForm">
+        <input type="text" id="name" placeholder="Dish Name" required />
+        <input type="number" id="price" placeholder="Price" required />
+        <input
+          type="number"
+          id="restaurantId"
+          placeholder="Restaurant ID"
+          value="1"
+          required
+        />
+        <button type="submit">Add Dish</button>
+      </form>
+    </div>
+
+    <script>
+      const API = "http://localhost:4000/";
+
+      async function gql(query, variables = {}) {
+        const res = await fetch(API, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query, variables }),
+        });
+        const json = await res.json();
+        if (json.errors) throw new Error(json.errors[0].message);
+        return json.data;
+      }
+
+      // 1. READ: load all dishes
+      async function load() {
+        const data = await gql(`{
+        dishes { id name price available }
+      }`);
+        document.getElementById("dishes-body").innerHTML = data.dishes
+          .map(
+            (d) => `
+        <tr>
+          <td>${d.id}</td>
+          <td>${d.name}</td>
+          <td>₹${d.price}</td>
+          <td class="${d.available ? "available" : "unavailable"}">${d.available ? "Yes" : "No"}</td>
+        </tr>
+      `,
+          )
+          .join("");
+      }
+
+      // 2. WRITE: add a dish, then reload the list
+      document
+        .getElementById("addForm")
+        .addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const name = document.getElementById("name").value;
+          const price = parseFloat(document.getElementById("price").value);
+          const restaurantId = document.getElementById("restaurantId").value;
+
+          await gql(
+            `mutation($name: String!, $price: Float!, $restaurantId: ID!) {
+          addDish(name: $name, price: $price, restaurantId: $restaurantId) {
+            id name price available
+          }
+        }`,
+            { name, price, restaurantId },
+          );
+          e.target.reset();
+          load();
+        });
+
+      load();
+    </script>
+  </body>
+</html>
