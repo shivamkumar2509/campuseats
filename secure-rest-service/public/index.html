@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Secure CampusEats</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Secure CampusEats</h1>
+
+    <!-- Login Box -->
+    <div class="box">
+      <h2>1. Login</h2>
+      <input type="text" id="username" placeholder="Username (customer/restaurant)">
+      <input type="password" id="password" placeholder="Password (password123)">
+      <button onclick="login()">Login</button>
+      <p id="login-status"></p>
+    </div>
+
+    <!-- Items Box -->
+    <div class="box">
+      <h2>2. Items</h2>
+      <button onclick="loadItems()">Load Items (Requires Auth)</button>
+      <ul id="items-list"></ul>
+    </div>
+
+    <!-- Add Item Box -->
+    <div class="box">
+      <h2>3. Add Item (Restaurant Only)</h2>
+      <input type="text" id="itemName" placeholder="Dish Name">
+      <input type="number" id="itemPrice" placeholder="Price">
+      <button onclick="addItem()">Add Item</button>
+      <p id="add-status"></p>
+    </div>
+  </div>
+
+  <script>
+    let token = localStorage.getItem('jwt_token') || null;
+
+    async function login() {
+      const res = await fetch('/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: document.getElementById('username').value,
+          password: document.getElementById('password').value
+        })
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        token = data.token;
+        localStorage.setItem('jwt_token', token);
+        document.getElementById('login-status').innerText = `Logged in as ${data.role}`;
+      } else {
+        document.getElementById('login-status').innerText = data.error;
+      }
+    }
+
+    async function loadItems() {
+      if (!token) return alert("Login first!");
+
+      const res = await fetch('/items', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        document.getElementById('items-list').innerHTML =
+          data.map(i => `<li><b>${i.name}</b> - ₹${i.price}</li>`).join('');
+      } else {
+        alert(data.error);
+      }
+    }
+
+    async function addItem() {
+      if (!token) return alert("Login first!");
+
+      const res = await fetch('/items', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          name: document.getElementById('itemName').value,
+          price: Number(document.getElementById('itemPrice').value)
+        })
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        document.getElementById('add-status').innerText = "Added!";
+        loadItems();
+      } else {
+        document.getElementById('add-status').innerText = data.error;
+      }
+    }
+  </script>
+</body>
+</html>
