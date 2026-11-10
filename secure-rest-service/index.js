@@ -16,14 +16,14 @@ const users = [
     id: 1,
     username: "customer",
     passwordHash:
-      "$2a$10$1q2w3e4r5t6y7u8i9o0p1a2s3d4f5g6h7j8k9l0z1x2c3v4b5n6m7q8w9e0r1t",
+      "$2b$10$BttYZSfNw44E83PqeI1lRu6s3vpgih/srbL8imsS6Fpg7GJ4hHh9m",
     role: "customer",
   },
   {
     id: 2,
     username: "restaurant",
     passwordHash:
-      "$2a$10$1q2w3e4r5t6y7u8i9o0p1a2s3d4f5g6h7j8k9l0z1x2c3v4b5n6m7q8w9e0r1t",
+      "$2b$10$BttYZSfNw44E83PqeI1lRu6s3vpgih/srbL8imsS6Fpg7GJ4hHh9m",
     role: "restaurant",
   },
 ];
